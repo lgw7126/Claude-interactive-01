@@ -8,11 +8,9 @@
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#000; overflow:hidden; }
 
-#bloom-canvas, #hand-canvas {
-  position:fixed; inset:0; width:100vw; height:100vh;
+#bloom-canvas {
+  position:fixed; inset:0; width:100vw; height:100vh; z-index:0;
 }
-#bloom-canvas { z-index:0; }
-#hand-canvas  { z-index:1; pointer-events:none; }
 
 #hand-hint {
   position:fixed; bottom:48px; left:50%; transform:translateX(-50%);
@@ -30,7 +28,6 @@ body { background:#000; overflow:hidden; }
 <body>
 
 <canvas id="bloom-canvas"></canvas>
-<canvas id="hand-canvas"></canvas>
 <video id="flower-video" muted playsinline preload="auto" style="display:none;"></video>
 <div id="hand-hint">open your hand to bloom</div>
 <div id="openness-bar"><div id="openness-fill"></div></div>
@@ -49,9 +46,7 @@ body { background:#000; overflow:hidden; }
 const VIDEO_SRC = 'flower-bloom.mp4';   // ← 여기만 내 영상으로 교체
 
 const video = document.getElementById('flower-video');
-const handCanvas = document.getElementById('hand-canvas');
 const bloomCanvas = document.getElementById('bloom-canvas');
-const hCtx = handCanvas.getContext('2d');
 const bCtx = bloomCanvas.getContext('2d');
 
 video.src = VIDEO_SRC;
@@ -68,7 +63,6 @@ video.addEventListener('loadedmetadata', () => {
 video.load();
 
 function resizeCanvases() {
-  handCanvas.width  = innerWidth; handCanvas.height  = innerHeight;
   bloomCanvas.width = innerWidth; bloomCanvas.height = innerHeight;
 }
 resizeCanvases();
@@ -116,11 +110,9 @@ hands.onResults(res => {
   const detected = res.multiHandLandmarks || [];
   if (detected.length > 0) {
     targetOpenness = measureOpenness(detected[0]);
-    drawHandOverlay(detected[0]);
     document.getElementById('hand-hint').style.opacity = '0';
   } else {
     targetOpenness = Math.max(0, targetOpenness - 0.04); // 손 치우면 천천히 닫힘
-    hCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
   }
 });
 
@@ -160,65 +152,6 @@ video.addEventListener('seeked', drawFrame);
 
   document.getElementById('openness-fill').style.width = (currentOpenness * 100) + '%';
 })();
-
-// ── 손 글로우 오버레이 ────────────────────────────────
-const CONNECTIONS = [
-  [0,1],[1,2],[2,3],[3,4],
-  [0,5],[5,6],[6,7],[7,8],
-  [5,9],[9,10],[10,11],[11,12],
-  [9,13],[13,14],[14,15],[15,16],
-  [13,17],[0,17],[17,18],[18,19],[19,20],
-];
-
-function mirX(x) { return (1 - x) * handCanvas.width; }  // 거울 반전
-function mirY(y) { return y * handCanvas.height; }
-
-function drawHandOverlay(lm) {
-  hCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
-  const op = currentOpenness;
-
-  CONNECTIONS.forEach(([a, b]) => {
-    const x1 = mirX(lm[a].x), y1 = mirY(lm[a].y);
-    const x2 = mirX(lm[b].x), y2 = mirY(lm[b].y);
-    hCtx.strokeStyle = `rgba(255,200,180,${0.15 + op * 0.25})`;
-    hCtx.lineWidth = 8; hCtx.lineCap = 'round';
-    hCtx.beginPath(); hCtx.moveTo(x1, y1); hCtx.lineTo(x2, y2); hCtx.stroke();
-    hCtx.strokeStyle = `rgba(255,230,215,${0.55 + op * 0.4})`;
-    hCtx.lineWidth = 2;
-    hCtx.beginPath(); hCtx.moveTo(x1, y1); hCtx.lineTo(x2, y2); hCtx.stroke();
-  });
-
-  lm.forEach((pt, i) => {
-    const x = mirX(pt.x), y = mirY(pt.y);
-    const r = FINGER_TIPS.includes(i) ? 5 : 3;
-    hCtx.beginPath();
-    hCtx.arc(x, y, r, 0, Math.PI * 2);
-    hCtx.fillStyle = `rgba(255,220,200,${0.7 + op * 0.3})`;
-    hCtx.fill();
-  });
-
-  FINGER_TIPS.forEach(ti => {
-    const x = mirX(lm[ti].x), y = mirY(lm[ti].y);
-    const r = 18 + op * 48;
-    const g = hCtx.createRadialGradient(x, y, 0, x, y, r);
-    g.addColorStop(0,   `rgba(255,180,160,${0.55 + op * 0.4})`);
-    g.addColorStop(0.35,`rgba(240,150,140,${0.25 + op * 0.3})`);
-    g.addColorStop(1,   'rgba(255,120,100,0)');
-    hCtx.fillStyle = g;
-    hCtx.beginPath(); hCtx.arc(x, y, r, 0, Math.PI * 2); hCtx.fill();
-  });
-
-  let pcx = 0, pcy = 0;
-  [0, 5, 9, 13, 17].forEach(i => { pcx += mirX(lm[i].x); pcy += mirY(lm[i].y); });
-  pcx /= 5; pcy /= 5;
-  const palmR = 60 + op * 140;
-  const pg = hCtx.createRadialGradient(pcx, pcy, 0, pcx, pcy, palmR);
-  pg.addColorStop(0,   `rgba(255,190,170,${0.18 + op * 0.28})`);
-  pg.addColorStop(0.5, `rgba(240,160,140,${0.08 + op * 0.14})`);
-  pg.addColorStop(1,   'rgba(255,140,120,0)');
-  hCtx.fillStyle = pg;
-  hCtx.beginPath(); hCtx.arc(pcx, pcy, palmR, 0, Math.PI * 2); hCtx.fill();
-}
 </script>
 </body>
 </html>
