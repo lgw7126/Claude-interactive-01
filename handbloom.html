@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Hand Bloom — open your hand to bloom</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#000; overflow:hidden; }
+
+#bloom-canvas, #hand-canvas {
+  position:fixed; inset:0; width:100vw; height:100vh;
+}
+#bloom-canvas { z-index:0; }
+#hand-canvas  { z-index:1; pointer-events:none; }
+
+#hand-hint {
+  position:fixed; bottom:48px; left:50%; transform:translateX(-50%);
+  z-index:2; color:rgba(255,255,255,0.75);
+  font-family:sans-serif; font-size:14px; letter-spacing:0.2em;
+  text-transform:uppercase; transition:opacity .6s;
+}
+#openness-bar {
+  position:fixed; bottom:28px; left:50%; transform:translateX(-50%);
+  z-index:2; width:180px; height:2px; background:rgba(255,255,255,0.15);
+}
+#openness-fill { height:100%; width:0%; background:rgba(255,190,170,0.9); }
+</style>
+</head>
+<body>
+
+<canvas id="bloom-canvas"></canvas>
+<canvas id="hand-canvas"></canvas>
+<video id="flower-video" muted playsinline preload="auto" style="display:none;"></video>
+<div id="hand-hint">open your hand to bloom</div>
+<div id="openness-bar"><div id="openness-fill"></div></div>
+
+<!-- MediaPipe -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils@0.3.1640029074/camera_utils.js" crossorigin="anonymous"></script>
+
+<script>
+// ══════════════════════════════════════════════════════
+//  HAND → VIDEO SCRUB
+//  손을 펼친 정도(0~1)가 영상의 재생 위치가 된다.
+//  주먹 = 영상 첫 프레임(꽃봉오리), 활짝 = 마지막 프레임(만개)
+// ══════════════════════════════════════════════════════
+
+const VIDEO_SRC = 'flower-bloom.mp4';   // ← 여기만 내 영상으로 교체
+
+const video = document.getElementById('flower-video');
+const handCanvas = document.getElementById('hand-canvas');
+const bloomCanvas = document.getElementById('bloom-canvas');
+const hCtx = handCanvas.getContext('2d');
+const bCtx = bloomCanvas.getContext('2d');
+
+video.src = VIDEO_SRC;
+
+let videoLoaded = false;
+let currentOpenness = 0;   // 부드럽게 따라가는 값
+let targetOpenness  = 0;   // 손에서 방금 측정한 값
+
+video.addEventListener('loadedmetadata', () => {
+  videoLoaded = true;
+  video.currentTime = 0;
+  video.pause();
+});
+video.load();
+
+function resizeCanvases() {
+  handCanvas.width  = innerWidth; handCanvas.height  = innerHeight;
+  bloomCanvas.width = innerWidth; bloomCanvas.height = innerHeight;
+}
+resizeCanvases();
+addEventListener('resize', resizeCanvases);
+
+// ── 손 펼침 측정 ──────────────────────────────────────
+// 손바닥 중심에서 다섯 손가락 끝까지의 평균 거리를
+// 손바닥 크기로 나눠 정규화 → 0(주먹) ~ 1(활짝)
+const FINGER_TIPS = [4, 8, 12, 16, 20];
+
+function measureOpenness(lm) {
+  const palmSize = Math.hypot(lm[9].x - lm[0].x, lm[9].y - lm[0].y);
+  if (palmSize < 0.001) return 0;
+
+  let cx = 0, cy = 0;
+  [0, 5, 9, 13, 17].forEach(i => { cx += lm[i].x; cy += lm[i].y; });
+  cx /= 5; cy /= 5;
+
+  const minD = 0.75, maxD = 2.05;  // 감도: 낮추면 조금만 펴도 만개
+  let sum = 0;
+  FINGER_TIPS.forEach(ti => {
+    const d = Math.hypot(lm[ti].x - cx, lm[ti].y - cy) / palmSize;
+    sum += Math.max(0, Math.min(1, (d - minD) / (maxD - minD)));
+  });
+  return sum / 5;
+}
+
+// ── MediaPipe 셋업 ────────────────────────────────────
+const wcam = document.createElement('video');
+wcam.muted = true; wcam.playsInline = true;
+wcam.style.display = 'none';
+document.body.appendChild(wcam);
+
+const hands = new Hands({
+  locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${f}`
+});
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 0,
+  minDetectionConfidence: 0.6,
+  minTrackingConfidence: 0.55,
+});
+
+hands.onResults(res => {
+  const detected = res.multiHandLandmarks || [];
+  if (detected.length > 0) {
+    targetOpenness = measureOpenness(detected[0]);
+    drawHandOverlay(detected[0]);
+    document.getElementById('hand-hint').style.opacity = '0';
+  } else {
+    targetOpenness = Math.max(0, targetOpenness - 0.04); // 손 치우면 천천히 닫힘
+    hCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
+  }
+});
+
+new Camera(wcam, {
+  onFrame: async () => { await hands.send({ image: wcam }); },
+  width: 1280, height: 720,
+}).start();
+
+// ── 메인 루프: openness → 영상 스크럽 ─────────────────
+let lastScrubTime = -1;
+
+function drawFrame() {
+  if (videoLoaded && video.readyState >= 2) {
+    const cw = bloomCanvas.width, ch = bloomCanvas.height;
+    const vw = video.videoWidth, vh = video.videoHeight;
+    // cover: 비율 유지한 채 화면을 꽉 채우고 넘치는 부분은 중앙 크롭
+    const scale = Math.max(cw / vw, ch / vh);
+    const dw = vw * scale, dh = vh * scale;
+    bCtx.clearRect(0, 0, cw, ch);
+    bCtx.drawImage(video, (cw - dw) / 2, (ch - dh) / 2, dw, dh);
+  }
+}
+video.addEventListener('seeked', drawFrame);
+
+(function controlLoop() {
+  requestAnimationFrame(controlLoop);
+
+  currentOpenness += (targetOpenness - currentOpenness) * 0.1;
+
+  if (videoLoaded && video.duration && isFinite(video.duration)) {
+    const targetTime = currentOpenness * video.duration;
+    if (Math.abs(targetTime - lastScrubTime) > 0.016 && !video.seeking) {
+      video.currentTime = targetTime;
+      lastScrubTime = targetTime;
+    }
+  }
+
+  document.getElementById('openness-fill').style.width = (currentOpenness * 100) + '%';
+})();
+
+// ── 손 글로우 오버레이 ────────────────────────────────
+const CONNECTIONS = [
+  [0,1],[1,2],[2,3],[3,4],
+  [0,5],[5,6],[6,7],[7,8],
+  [5,9],[9,10],[10,11],[11,12],
+  [9,13],[13,14],[14,15],[15,16],
+  [13,17],[0,17],[17,18],[18,19],[19,20],
+];
+
+function mirX(x) { return (1 - x) * handCanvas.width; }  // 거울 반전
+function mirY(y) { return y * handCanvas.height; }
+
+function drawHandOverlay(lm) {
+  hCtx.clearRect(0, 0, handCanvas.width, handCanvas.height);
+  const op = currentOpenness;
+
+  CONNECTIONS.forEach(([a, b]) => {
+    const x1 = mirX(lm[a].x), y1 = mirY(lm[a].y);
+    const x2 = mirX(lm[b].x), y2 = mirY(lm[b].y);
+    hCtx.strokeStyle = `rgba(255,200,180,${0.15 + op * 0.25})`;
+    hCtx.lineWidth = 8; hCtx.lineCap = 'round';
+    hCtx.beginPath(); hCtx.moveTo(x1, y1); hCtx.lineTo(x2, y2); hCtx.stroke();
+    hCtx.strokeStyle = `rgba(255,230,215,${0.55 + op * 0.4})`;
+    hCtx.lineWidth = 2;
+    hCtx.beginPath(); hCtx.moveTo(x1, y1); hCtx.lineTo(x2, y2); hCtx.stroke();
+  });
+
+  lm.forEach((pt, i) => {
+    const x = mirX(pt.x), y = mirY(pt.y);
+    const r = FINGER_TIPS.includes(i) ? 5 : 3;
+    hCtx.beginPath();
+    hCtx.arc(x, y, r, 0, Math.PI * 2);
+    hCtx.fillStyle = `rgba(255,220,200,${0.7 + op * 0.3})`;
+    hCtx.fill();
+  });
+
+  FINGER_TIPS.forEach(ti => {
+    const x = mirX(lm[ti].x), y = mirY(lm[ti].y);
+    const r = 18 + op * 48;
+    const g = hCtx.createRadialGradient(x, y, 0, x, y, r);
+    g.addColorStop(0,   `rgba(255,180,160,${0.55 + op * 0.4})`);
+    g.addColorStop(0.35,`rgba(240,150,140,${0.25 + op * 0.3})`);
+    g.addColorStop(1,   'rgba(255,120,100,0)');
+    hCtx.fillStyle = g;
+    hCtx.beginPath(); hCtx.arc(x, y, r, 0, Math.PI * 2); hCtx.fill();
+  });
+
+  let pcx = 0, pcy = 0;
+  [0, 5, 9, 13, 17].forEach(i => { pcx += mirX(lm[i].x); pcy += mirY(lm[i].y); });
+  pcx /= 5; pcy /= 5;
+  const palmR = 60 + op * 140;
+  const pg = hCtx.createRadialGradient(pcx, pcy, 0, pcx, pcy, palmR);
+  pg.addColorStop(0,   `rgba(255,190,170,${0.18 + op * 0.28})`);
+  pg.addColorStop(0.5, `rgba(240,160,140,${0.08 + op * 0.14})`);
+  pg.addColorStop(1,   'rgba(255,140,120,0)');
+  hCtx.fillStyle = pg;
+  hCtx.beginPath(); hCtx.arc(pcx, pcy, palmR, 0, Math.PI * 2); hCtx.fill();
+}
+</script>
+</body>
+</html>
