@@ -4,7 +4,7 @@
 
 ## 🔗 바로 실행하기
 
-**[👉 여기를 클릭해서 실행](https://lgw7126.github.io/claude-interactive-01/handbloom.html)**
+**[👉 여기를 클릭해서 실행](https://lgw7126.github.io/Claude-interactive-01/handbloom.html)**
 
 > 위 링크가 "404 File not found"로 뜬다면 아직 GitHub Pages가 켜지지 않은 것입니다. 아래 [GitHub Pages 켜는 법](#github-pages-켜는-법-한-번만-하면-됨)을 먼저 진행해 주세요.
 
